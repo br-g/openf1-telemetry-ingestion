@@ -27,7 +27,7 @@ def ingest_telemetry():
             session_key=session["session_key"],
             collection_names=["location", "car_data", "intervals"],
         )
-        send_pushover_alert(title="Telemetry ingested", message="")
+        send_pushover_alert(title="Telemetry ingested", message="Telemetry ingested")
     except ValueError:  # Data not yet available
         logger.info("Data not yet available")
 
