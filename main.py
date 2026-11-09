@@ -11,7 +11,7 @@ from openf1.util.openf1_client import get
 from pushover import send_pushover_alert
 
 
-REINGESTION_WINDOW = timedelta(hours=6)
+REINGESTION_WINDOW = timedelta(hours=24)
 REINGEST_COLLECTIONS = ["pit"]
 
 
