@@ -47,3 +47,10 @@ Before the first deployment:
    those existing Google Cloud resources.
 
 Run the isolated scheduling tests with `python3 -m unittest discover -s tests`.
+
+The job loads `F1_TOKEN` from MongoDB immediately before ingestion, using the
+`_f1_tokens` collection and `_key: "current_token"` record maintained by
+`openf1-ingestor`. Use the same `MONGO_CONNECTION_STRING` and `OPENF1_DB_NAME`
+as that project, with read access to `_f1_tokens`. No static `F1_TOKEN` deployment
+variable is needed. Missing or invalid tokens fail the run; this job does not
+refresh tokens. Runs outside the ingestion window do not read the token.

@@ -1,3 +1,4 @@
+import os
 import importlib.util
 import sys
 import unittest
@@ -17,9 +18,10 @@ def load_job():
         "loguru", "openf1", "openf1.services", "openf1.services.ingestor_livetiming",
         "openf1.services.ingestor_livetiming.historical",
         "openf1.services.ingestor_livetiming.historical.main", "openf1.util",
-        "openf1.util.openf1_client", "pushover",
+        "openf1.util.openf1_client", "openf1.util.db", "pushover",
     ):
         modules[name] = ModuleType(name)
+    modules["openf1.util.db"]._get_mongo_db_sync = Mock()
     modules["loguru"].logger = Mock()
     modules["openf1.services.ingestor_livetiming.historical.main"].ingest_collections = Mock()
     modules["openf1.util.openf1_client"].get = Mock()
@@ -35,6 +37,13 @@ class IngestionTests(unittest.TestCase):
     def setUp(self):
         self.job = load_job()
         self.now = datetime(2026, 1, 1, 2, tzinfo=timezone.utc)
+        self.collection = self.job._get_mongo_db_sync.return_value.__getitem__ = Mock(
+            return_value=Mock())
+        self.token_collection = self.collection.return_value
+        self.token_collection.find_one.return_value = {"token": "test-token"}
+        env = patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
 
     def session(self, hours, key=1, **extra):
         return dict(year=2025, meeting_key=10, session_key=key,
@@ -86,9 +95,36 @@ class IngestionTests(unittest.TestCase):
                     self.job.ingest_telemetry(self.now)
         self.job.ingest_collections.assert_not_called()
 
+    def test_token_is_loaded_before_ingestion(self):
+        self.job.get.return_value = [self.session(1)]
+        os.environ["F1_TOKEN"] = "old-token"
+        self.job.ingest_collections.side_effect = lambda **kwargs: self.assertEqual(
+            os.environ["F1_TOKEN"], "test-token")
+        self.job.ingest_telemetry(self.now)
+        self.collection.assert_called_once_with("_f1_tokens")
+        self.token_collection.find_one.assert_called_once_with(
+            {"_key": "current_token"}, sort=[("timestamp", -1)])
+
+    def test_missing_or_invalid_token_stops_ingestion(self):
+        self.job.get.return_value = [self.session(1)]
+        for document in (None, {}, {"token": ""}, {"token": " "}, {"token": 123}):
+            with self.subTest(document=document):
+                self.token_collection.find_one.return_value = document
+                with self.assertRaisesRegex(RuntimeError, "No valid F1 token"):
+                    self.job.ingest_telemetry(self.now)
+        self.job.ingest_collections.assert_not_called()
+
+    def test_token_database_error_propagates(self):
+        self.job.get.return_value = [self.session(1)]
+        self.token_collection.find_one.side_effect = RuntimeError("Database unavailable")
+        with self.assertRaisesRegex(RuntimeError, "Database unavailable"):
+            self.job.ingest_telemetry(self.now)
+        self.job.ingest_collections.assert_not_called()
+
     def test_empty_schedule(self):
         self.job.get.return_value = []
         self.job.ingest_telemetry(self.now)
+        self.job._get_mongo_db_sync.assert_not_called()
         self.job.ingest_collections.assert_not_called()
 
     def test_collections_can_be_configured_and_unavailable_session_does_not_stop_next(self):
