@@ -1,0 +1,79 @@
+name: Deploy Telemetry Ingestion Job
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  SCW_REGION: fr-par
+  SCW_JOB_NAME: telemetry-ingestion
+  SCW_REGISTRY: rg.fr-par.scw.cloud/namespace-funny-visvesvaraya
+  SCW_IMAGE_PATH: rg.fr-par.scw.cloud/namespace-funny-visvesvaraya/telemetry_ingestion
+
+jobs:
+  deploy:
+    name: Deploy to Scaleway Serverless Job
+    runs-on: ubuntu-latest
+    permissions:
+      contents: "read"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Scaleway CLI
+        uses: scaleway/action-scw@v0
+        with:
+          save-config: true
+          export-config: true
+          access-key: ${{ secrets.SCW_ACCESS_KEY }}
+          secret-key: ${{ secrets.SCW_SECRET_KEY }}
+          default-project-id: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          default-organization-id: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
+
+      - name: Log in to Scaleway Container Registry
+        run: |
+          docker login ${{ env.SCW_REGISTRY }} -u nologin --password-stdin <<< "${{ secrets.SCW_SECRET_KEY }}"
+
+      - name: Build and Push Docker Image
+        run: |
+          echo "Building Docker image..."
+          docker build \
+            -t ${{ env.SCW_IMAGE_PATH }}:${{ github.sha }} \
+            -t ${{ env.SCW_IMAGE_PATH }}:latest \
+            .
+          echo "Pushing Docker image to Scaleway Container Registry..."
+          docker push ${{ env.SCW_IMAGE_PATH }}:${{ github.sha }}
+          docker push ${{ env.SCW_IMAGE_PATH }}:latest
+
+      - name: Update Serverless Job definition
+        id: deploy
+        run: |
+          echo "Deploying/Updating Serverless Job: ${{ env.SCW_JOB_NAME }}"
+
+          # scw addresses job definitions by UUID, not by name, and the list
+          # command has no name filter — so resolve the UUID from the name.
+          # (Alternative: store the UUID once as a GitHub variable and skip this.)
+          JOB_ID=$(scw jobs definition list region=${{ env.SCW_REGION }} -o json \
+            | jq -r --arg name "${{ env.SCW_JOB_NAME }}" \
+              'map(select(.name == $name)) | first | .id // empty')
+
+          if [ -z "$JOB_ID" ]; then
+            echo "Error: no job definition named '${{ env.SCW_JOB_NAME }}' found in region ${{ env.SCW_REGION }}." >&2
+            echo "Create the job with the required runtime credentials before deploying." >&2
+            exit 1
+          fi
+
+          # Point the definition at the immutable SHA tag: unlike Cloud Run,
+          # Scaleway stores the image URI as-is, so re-sending ":latest" would
+          # record no change. SHA tags make every deploy explicit + rollbackable.
+          scw jobs definition update "$JOB_ID" \
+            image-uri=${{ env.SCW_IMAGE_PATH }}:${{ github.sha }} \
+            region=${{ env.SCW_REGION }} \
+            cron-schedule.schedule="0 * * * *" \
+            cron-schedule.timezone=UTC
+
+          # To also trigger a run right after deploying, uncomment:
+          # scw jobs definition start "$JOB_ID" region=${{ env.SCW_REGION }}
+
+          echo "Deployment configuration updated successfully."
